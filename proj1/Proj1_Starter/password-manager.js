@@ -5,6 +5,9 @@
 const { stringToBuffer, bufferToString, encodeBuffer, decodeBuffer, getRandomBytes } = require("./lib");
 const { subtle } = require('crypto').webcrypto;
 
+const SALT_LENGTH = 16;
+const DERIVED_KEY_LENGTH = 512;
+
 /********* Constants ********/
 
 const PBKDF2_ITERATIONS = 100000; // number of iterations for PBKDF2 algorithm
@@ -120,18 +123,17 @@ class Keychain {
    *  You may design the constructor with any parameters you would like. 
    * Return Type: void
    */
-  constructor() {
-    this.data = { 
-      /* Store member variables that you intend to be public here
-         (i.e. information that will not compromise security if an adversary sees) */
-    };
-    this.secrets = {
-      /* Store member variables that you intend to be private here
-         (information that an adversary should NOT see). */
+constructor(salt, aesKey, hmacKey) {
+    this.data = {
+        salt: encodeBuffer(salt),
+        kvs: {}
     };
 
-    throw "Not Implemented!";
-  };
+    this.secrets = {
+        aesKey: aesKey,
+        hmacKey: hmacKey
+    };
+};
 
   /** 
     * Creates an empty keychain with the given password.
@@ -140,9 +142,68 @@ class Keychain {
     *   password: string
     * Return Type: void
     */
-  static async init(password) {
-    throw "Not Implemented!";
-  }
+ 
+static async init(password) {
+
+    if (typeof password !== "string") {
+        throw new TypeError("Password must be a string");
+    }
+
+    // Generate a random salt.
+    const salt = getRandomBytes(SALT_LENGTH);
+
+    // Import the master password.
+    const passwordKey = await subtle.importKey(
+        "raw",
+        stringToBuffer(password),
+        "PBKDF2",
+        false,
+        ["deriveBits"]
+    );
+
+    // Derive 512 bits using PBKDF2.
+    const derivedBits = await subtle.deriveBits(
+        {
+            name: "PBKDF2",
+            salt: salt,
+            iterations: PBKDF2_ITERATIONS,
+            hash: "SHA-256"
+        },
+        passwordKey,
+        DERIVED_KEY_LENGTH
+    );
+
+    // Split the derived material into two 256-bit keys.
+    const derivedKeyBytes = new Uint8Array(derivedBits);
+
+    const aesKeyBytes = derivedKeyBytes.slice(0, 32);
+    const hmacKeyBytes = derivedKeyBytes.slice(32, 64);
+
+    // Import AES-GCM key.
+    const aesKey = await subtle.importKey(
+        "raw",
+        aesKeyBytes,
+        "AES-GCM",
+        false,
+        ["encrypt", "decrypt"]
+    );
+
+    // Import HMAC key.
+    const hmacKey = await subtle.importKey(
+        "raw",
+        hmacKeyBytes,
+        {
+            name: "HMAC",
+            hash: "SHA-256"
+        },
+        false,
+        ["sign", "verify"]
+    );
+
+    // Return initialized Keychain.
+    return new Keychain(salt, aesKey, hmacKey);
+}
+
 
   /**
     * Loads the keychain state from the provided representation (repr). The
